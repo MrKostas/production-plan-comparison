@@ -1,0 +1,7 @@
+scenarioKey,lineKey,month,isComplete
+factory_plan,Демо-завод|DEMO|Линия №1,2027-04-01,true
+factory_plan,Демо-завод|DEMO|Линия №2,2027-04-01,true
+current_version,Демо-завод|DEMO|Линия №1,2027-04-01,true
+current_version,Демо-завод|DEMO|Линия №2,2027-04-01,true
+previous_version,Демо-завод|DEMO|Линия №1,2027-04-01,true
+previous_version,Демо-завод|DEMO|Линия №2,2027-04-01,true

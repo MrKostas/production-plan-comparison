@@ -1,0 +1,339 @@
+-- Replace the broken measure. The denominator is the distinct order
+-- date-product pairs in the current filter context, independent of mass.
+% совпадения периодов :=
+VAR OrderPairs =
+    DISTINCT (
+        SELECTCOLUMNS (
+            FILTER ( orders; orders[mass] > 0 );
+            "DateKey"; orders[date];
+            "ProductKey"; orders[material]
+        )
+    )
+VAR ProductionPairs =
+    DISTINCT (
+        SELECTCOLUMNS (
+            FILTER ( main; main[mass] > 0 );
+            "DateKey"; main[date];
+            "ProductKey"; main[material]
+        )
+    )
+RETURN
+    IF (
+        HASONEVALUE ( scenario_info[scenarioCode] );
+        DIVIDE (
+            COUNTROWS ( INTERSECT ( OrderPairs; ProductionPairs ) );
+            COUNTROWS ( OrderPairs )
+        );
+        BLANK ()
+    )
+
+-- This is the production-series measure ("серии" in the control table).
+-- Use after replacing the strickPeriodsDaily Power Query definition.
+-- PeriodAnchor alone is not unique across products, lines or scenarios.
+Количество периодов :=
+COUNTROWS (
+    SUMMARIZE (
+        strickPeriodsDaily;
+        strickPeriodsDaily[scenarioKey];
+        strickPeriodsDaily[lineKey];
+        strickPeriodsDaily[material];
+        strickPeriodsDaily[PeriodAnchor]
+    )
+)
+
+Общая масса произведенных продуктов :=
+SUM ( main[mass] )
+
+-- Missing norms invalidate the hour totals in the current filter context.
+Недостающие нормы :=
+COUNTROWS (
+    FILTER (
+        dailyHours;
+        ISBLANK ( dailyHours[performance] )
+            || ISBLANK ( dailyHours[workingHours] )
+    )
+)
+
+Рабочее время :=
+IF (
+    [Недостающие нормы] > 0;
+    BLANK ();
+    SUM ( dailyHours[workHours] )
+)
+
+Общая продолжительность простоев / переходов :=
+IF (
+    [Недостающие нормы] > 0;
+    BLANK ();
+    SUM ( dailyHours[downtimeHours] )
+)
+
+Доступное время :=
+IF (
+    [Недостающие нормы] > 0;
+    BLANK ();
+    SUM ( availableHours[workingHours] )
+)
+
+-- activeStops contains only stops on lines with positive production in the
+-- selected scenario and month. The raw mandatory_stops query is connection-only.
+Часы обязательных остановок :=
+IF (
+    HASONEVALUE ( scenario_info[scenarioCode] );
+    SUM ( activeStops[durationHours] );
+    BLANK ()
+)
+
+-- A missing coverage row is represented by BLANK in stopCoverageStatus.
+Неподтвержденные остановки :=
+VAR CoverageRows = COUNTROWS ( stopCoverageStatus )
+VAR IncompleteRows =
+    COUNTROWS (
+        FILTER (
+            stopCoverageStatus;
+            stopCoverageStatus[isComplete] <> TRUE ()
+                || ISBLANK ( stopCoverageStatus[isComplete] )
+        )
+    )
+RETURN
+    IF (
+        ISBLANK ( CoverageRows );
+        BLANK ();
+        IF ( ISBLANK ( IncompleteRows ); 0; IncompleteRows )
+    )
+
+-- Stops have line grain, whereas availableHours has line-product grain.
+-- Product-level density is therefore intentionally unavailable.
+Плотность плана :=
+IF (
+    HASONEVALUE ( scenario_info[scenarioCode] )
+        && NOT ( ISFILTERED ( product[name] ) )
+        && NOT ( ISFILTERED ( productGroup[name] ) )
+        && [Недостающие нормы] = 0
+        && NOT ( ISBLANK ( [Неподтвержденные остановки] ) )
+        && [Неподтвержденные остановки] = 0;
+    DIVIDE (
+        [Рабочее время]
+            + IF (
+                ISBLANK ( [Часы обязательных остановок] );
+                0;
+                [Часы обязательных остановок]
+            );
+        [Доступное время]
+    );
+    BLANK ()
+)
+
+-- IKP relative v1 (2026-10-21). Existing five measures above are unchanged.
+-- Load lineDayLoad first; relations: scenarioKey, lineKey, date -> dimensions.
+-- All baseline CALCULATE calls replace the ENTIRE scenario dimension filter
+-- (including scenarioName/Owner), retaining site and month.
+-- Excel compatibility: ISFILTERED must reference individual columns. Check
+-- every current column to retain the previous table-wide direct-filter guard.
+ИКП Контекст допустим :=
+VAR __IkpFirstDate = MIN ( calendar[date] )
+VAR __IkpLastDate = MAX ( calendar[date] )
+VAR __IkpMonthStart = DATE ( YEAR ( __IkpFirstDate ); MONTH ( __IkpFirstDate ); 1 )
+VAR __IkpMonthEnd = EOMONTH ( __IkpFirstDate; 0 )
+RETURN
+    IF (
+        HASONEVALUE ( scenario_info[scenarioCode] )
+            && HASONEVALUE ( site_info[siteKey] )
+            && NOT ( ISBLANK ( __IkpFirstDate ) )
+            && __IkpFirstDate = __IkpMonthStart && __IkpLastDate = __IkpMonthEnd
+            && COUNTROWS ( DISTINCT ( calendar[date] ) ) = DAY ( __IkpMonthEnd )
+            && NOT (
+                ISFILTERED ( product[name] )
+                    || ISFILTERED ( product[productGroup] )
+                    || ISFILTERED ( productGroup[name] )
+                    || ISFILTERED ( line_info[lineKey] )
+                    || ISFILTERED ( line_info[sectionKey] )
+                    || ISFILTERED ( line_info[lineName] )
+                    || ISFILTERED ( section_info[sectionKey] )
+                    || ISFILTERED ( section_info[siteKey] )
+                    || ISFILTERED ( section_info[sectionName] )
+                    || ISFILTERED ( main[date] )
+                    || ISFILTERED ( main[lineKey] )
+                    || ISFILTERED ( main[scenarioKey] )
+                    || ISFILTERED ( main[material] )
+                    || ISFILTERED ( main[mass] )
+                    || ISFILTERED ( dailyHours[date] )
+                    || ISFILTERED ( dailyHours[lineKey] )
+                    || ISFILTERED ( dailyHours[scenarioKey] )
+                    || ISFILTERED ( dailyHours[material] )
+                    || ISFILTERED ( dailyHours[dailyMass] )
+                    || ISFILTERED ( dailyHours[performance] )
+                    || ISFILTERED ( dailyHours[workingHours] )
+                    || ISFILTERED ( dailyHours[workHours] )
+                    || ISFILTERED ( dailyHours[downtimeHours] )
+                    || ISFILTERED ( lineDayLoad[lineKey] )
+                    || ISFILTERED ( lineDayLoad[sectionKey] )
+                    || ISFILTERED ( lineDayLoad[siteKey] )
+                    || ISFILTERED ( lineDayLoad[scenarioKey] )
+                    || ISFILTERED ( lineDayLoad[date] )
+                    || ISFILTERED ( lineDayLoad[rawHours] )
+                    || ISFILTERED ( lineDayLoad[missingNorms] )
+                    || ISFILTERED ( lineDayLoad[active] )
+                    || ISFILTERED ( lineDayLoad[stopHours] )
+                    || ISFILTERED ( lineDayLoad[stopSignature] )
+                    || ISFILTERED ( lineDayLoad[factoryStopSignature] )
+                    || ISFILTERED ( lineDayLoad[stopsComparable] )
+                    || ISFILTERED ( lineDayLoad[month] )
+                    || ISFILTERED ( lineDayLoad[isComplete] )
+                    || ISFILTERED ( lineDayLoad[comparisonSetID] )
+                    || ISFILTERED ( lineDayLoad[methodVersion] )
+                    || ISFILTERED ( lineDayLoad[isProvided] )
+                    || ISFILTERED ( lineDayLoad[referenceApproved] )
+                    || ISFILTERED ( lineDayLoad[inputsConfirmed] )
+                    || ISFILTERED ( lineDayLoad[capacityHours] )
+                    || ISFILTERED ( lineDayLoad[isOverloaded] )
+                    || ISFILTERED ( strickPeriodsDaily[scenarioKey] )
+                    || ISFILTERED ( strickPeriodsDaily[lineKey] )
+                    || ISFILTERED ( strickPeriodsDaily[material] )
+                    || ISFILTERED ( strickPeriodsDaily[date] )
+                    || ISFILTERED ( strickPeriodsDaily[dailyMass] )
+                    || ISFILTERED ( strickPeriodsDaily[DayIndex] )
+                    || ISFILTERED ( strickPeriodsDaily[PeriodAnchor] )
+                    || ISFILTERED ( orders[date] )
+                    || ISFILTERED ( orders[material] )
+                    || ISFILTERED ( orders[mass] )
+            );
+        1; 0
+    )
+
+ИКП Занятые линия-дни :=
+SUM ( lineDayLoad[active] ) + 0
+
+ИКП Необрезанные часы :=
+IF ( SUM ( lineDayLoad[missingNorms] ) = 0; SUM ( lineDayLoad[rawHours] ); BLANK () )
+
+ИКП Перегруженные линия-дни :=
+COUNTROWS ( FILTER ( lineDayLoad; lineDayLoad[isOverloaded] = TRUE () ) ) + 0
+
+-- Every registered line must have coverage, even if it has no production.
+ИКП Данные доступны :=
+VAR __IkpExpectedRows = COUNTROWS ( line_info ) * COUNTROWS ( DISTINCT ( calendar[date] ) )
+VAR __IkpBadRows = COUNTROWS (
+    FILTER ( lineDayLoad;
+        ISBLANK ( lineDayLoad[isComplete] ) || lineDayLoad[isComplete] <> TRUE ()
+            || ISBLANK ( lineDayLoad[isProvided] ) || lineDayLoad[isProvided] <> TRUE ()
+            || ISBLANK ( lineDayLoad[inputsConfirmed] ) || lineDayLoad[inputsConfirmed] <> TRUE ()
+            || ISBLANK ( lineDayLoad[referenceApproved] ) || lineDayLoad[referenceApproved] <> TRUE ()
+            || ISBLANK ( lineDayLoad[comparisonSetID] )
+            || lineDayLoad[methodVersion] <> "ikp-relative-v1"
+            || lineDayLoad[missingNorms] > 0
+    )
+)
+VAR __IkpOrderPairs = COUNTROWS ( SUMMARIZE ( FILTER ( orders; orders[mass] > 0 ); orders[date]; orders[material] ) )
+RETURN IF (
+    [ИКП Контекст допустим] = 1 && __IkpExpectedRows > 0
+        && COUNTROWS ( lineDayLoad ) = __IkpExpectedRows && __IkpBadRows = 0
+        && HASONEVALUE ( lineDayLoad[comparisonSetID] ) && __IkpOrderPairs > 0;
+    1; 0
+)
+
+ИКП Эталон доступен :=
+VAR __IkpReady = CALCULATE ( [ИКП Данные доступны]; FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) )
+VAR __IkpMass = CALCULATE ( [Общая масса произведенных продуктов]; FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) )
+RETURN IF ( __IkpReady = 1 && __IkpMass > 0; 1; 0 )
+
+ИКП Вводные сопоставимы :=
+VAR __IkpCurrentSet = FIRSTNONBLANK ( lineDayLoad[comparisonSetID]; 1 )
+VAR __IkpFactorySet = CALCULATE ( FIRSTNONBLANK ( lineDayLoad[comparisonSetID]; 1 ); FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) )
+VAR __IkpDifferentStops = COUNTROWS ( FILTER ( lineDayLoad; lineDayLoad[stopsComparable] <> TRUE () ) )
+RETURN IF ( [ИКП Данные доступны] = 1 && [ИКП Эталон доступен] = 1
+    && __IkpCurrentSet = __IkpFactorySet && __IkpDifferentStops = 0; 1; 0 )
+
+ИКП Вклад уплотнения :=
+VAR __IkpCurrent = [ИКП Занятые линия-дни]
+VAR __IkpFactory = CALCULATE ( [ИКП Занятые линия-дни]; FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) )
+RETURN IF ( [ИКП Вводные сопоставимы] = 1;
+    60 * DIVIDE ( __IkpFactory - __IkpCurrent; MAX ( __IkpFactory; __IkpCurrent ); 0 ); BLANK () )
+
+ИКП Вклад дат :=
+VAR __IkpCurrent = [% совпадения периодов] + 0
+VAR __IkpFactory = CALCULATE ( [% совпадения периодов]; FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) ) + 0
+RETURN IF ( [ИКП Вводные сопоставимы] = 1; 25 * ( __IkpCurrent - __IkpFactory ); BLANK () )
+
+ИКП Вклад серий :=
+VAR __IkpCurrent = [Количество периодов] + 0
+VAR __IkpFactory = CALCULATE ( [Количество периодов]; FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) ) + 0
+RETURN IF ( [ИКП Вводные сопоставимы] = 1;
+    15 * DIVIDE ( __IkpFactory - __IkpCurrent; MAX ( __IkpFactory; __IkpCurrent ); 0 ); BLANK () )
+
+ИКП Ошибка объемов :=
+VAR __IkpFactoryTotal = CALCULATE ( [Общая масса произведенных продуктов]; FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) )
+VAR __IkpAbsoluteError = SUMX (
+    VALUES ( product[name] );
+    VAR __IkpCurrentMass = CALCULATE ( [Общая масса произведенных продуктов] ) + 0
+    VAR __IkpFactoryMass = CALCULATE ( [Общая масса произведенных продуктов]; FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) ) + 0
+    RETURN ABS ( __IkpCurrentMass - __IkpFactoryMass )
+)
+RETURN IF ( [ИКП Вводные сопоставимы] = 1; DIVIDE ( __IkpAbsoluteError; __IkpFactoryTotal ); BLANK () )
+
+ИКП Вклад объемов :=
+IF ( NOT ( ISBLANK ( [ИКП Ошибка объемов] ) ); -100 * [ИКП Ошибка объемов]; BLANK () )
+
+ИКП Продуктов вне допуска :=
+IF ( [ИКП Вводные сопоставимы] = 1;
+    SUMX (
+        VALUES ( product[name] );
+        VAR __IkpCurrentMass = CALCULATE ( [Общая масса произведенных продуктов] ) + 0
+        VAR __IkpFactoryMass = CALCULATE ( [Общая масса произведенных продуктов]; FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) ) + 0
+        RETURN IF ( __IkpFactoryMass > 0;
+            IF ( ABS ( __IkpCurrentMass - __IkpFactoryMass ) > 0.05 * __IkpFactoryMass + 0.000001; 1; 0 );
+            IF ( __IkpCurrentMass > 0.000001; 1; 0 )
+        )
+    ); BLANK ()
+)
+
+-- Status code precedence is shared by the public score and human-readable status.
+-- 0 valid, 1 context, 2 reference, 3 inputs, 4 comparability,
+-- 5 reference overload, 6 candidate overload, 7 volume cap, 8 empty plan.
+ИКП Код статуса :=
+VAR __IkpFactoryOverload = CALCULATE ( [ИКП Перегруженные линия-дни]; FILTER ( ALL ( scenario_info ); scenario_info[scenarioCode] = "factory_plan" ) )
+RETURN SWITCH ( TRUE ();
+    [ИКП Контекст допустим] <> 1; 1;
+    [ИКП Эталон доступен] <> 1; 2;
+    [ИКП Данные доступны] <> 1; 3;
+    [ИКП Вводные сопоставимы] <> 1; 4;
+    __IkpFactoryOverload > 0; 5;
+    [ИКП Перегруженные линия-дни] > 0; 6;
+    [Общая масса произведенных продуктов] + 0 = 0; 8;
+    [ИКП Продуктов вне допуска] > 0; 7;
+    0
+)
+
+ИКП Статус :=
+SWITCH ( [ИКП Код статуса];
+    0; "Исследовательская версия; суточная мощность проверена";
+    1; "Выберите одну площадку, полный месяц и один сценарий без детализации";
+    2; "Эталон отсутствует, не подтвержден или его данные неполны";
+    3; "Нет обязательных данных: нормы, остановки, заказы или контракт";
+    4; "Вводные несопоставимы: контракт или остановки отличаются от эталона";
+    5; "Эталон не прошел проверку суточной мощности";
+    6; "План перегружен: " & FORMAT ( [ИКП Перегруженные линия-дни]; "0" ) & " линия-дней";
+    7; "Объемы вне допуска; оценка ограничена";
+    8; "Пустой план; объемы вне допуска";
+    "Неизвестный статус"
+)
+
+ИКП :=
+VAR __IkpStatusCode = [ИКП Код статуса]
+VAR __IkpRawScore = MAX ( 0; 100 + [ИКП Вклад уплотнения] + [ИКП Вклад дат] + [ИКП Вклад серий] + [ИКП Вклад объемов] )
+RETURN SWITCH ( TRUE ();
+    __IkpStatusCode = 8; 0;
+    __IkpStatusCode = 7; MIN ( 100; __IkpRawScore );
+    __IkpStatusCode = 0; __IkpRawScore;
+    BLANK ()
+)
+
+ИКП Отклонение от эталона :=
+IF ( NOT ( ISBLANK ( [ИКП] ) ); [ИКП] - 100; BLANK () )
+
+-- The adjustment reconciles the waterfall with floor/cap/empty-plan rules.
+ИКП Корректировка ограничений :=
+IF ( NOT ( ISBLANK ( [ИКП] ) );
+    [ИКП] - ( 100 + [ИКП Вклад уплотнения] + [ИКП Вклад дат] + [ИКП Вклад серий] + [ИКП Вклад объемов] );
+    BLANK ()
+)

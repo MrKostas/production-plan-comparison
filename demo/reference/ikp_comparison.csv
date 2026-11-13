@@ -1,0 +1,4 @@
+comparisonSetID,methodVersion,scenarioKey,siteKey,month,isProvided,referenceApproved,inputsConfirmed
+demo-2027-04,ikp-relative-v1,factory_plan,1,2027-04-01,true,true,true
+demo-2027-04,ikp-relative-v1,current_version,1,2027-04-01,true,true,true
+demo-2027-04,ikp-relative-v1,previous_version,1,2027-04-01,true,true,true
